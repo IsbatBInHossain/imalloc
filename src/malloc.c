@@ -10,30 +10,54 @@ typedef struct block
 
 block_t *head = NULL;
 
+block_t *find_free_block(size_t size)
+{
+  if (head == NULL)
+    return NULL;
+  block_t *curr = head;
+  while (curr != NULL)
+  {
+    if (curr->size >= size && curr->free == 1)
+    {
+      return curr;
+    }
+    else
+      curr = curr->next;
+  }
+  return NULL;
+};
+
 void *imalloc(size_t size)
 {
-  void *request = sbrk(sizeof(block_t) + size);
-  if (request == (void *)-1)
-    return NULL;
+  block_t *block = find_free_block(size); // returns block_t*, not void*
 
-  block_t *block = (block_t *)request;
-
-  block->size = size;
-  block->free = 0;
-  block->next = NULL;
-
-  // Add to linked list
-  if (head == NULL)
+  if (block == NULL)
   {
-    head = block;
+    block = sbrk(sizeof(block_t) + size);
+    if (block == (void *)-1)
+      return NULL;
+
+    block->size = size;
+    block->free = 0;
+    block->next = NULL;
+
+    // Only add to list if it's a NEW block
+    if (head == NULL)
+    {
+      head = block;
+    }
+    else
+    {
+      block_t *curr = head;
+      while (curr->next != NULL)
+        curr = curr->next;
+      curr->next = block;
+    }
   }
   else
   {
-    block_t *curr = head;
-    while (curr->next != NULL)
-      curr = curr->next;
-
-    curr->next = block;
+    // Reusing existing block — just mark it used
+    block->free = 0;
   }
 
   return (void *)(block + 1);
@@ -66,12 +90,15 @@ void print_heap()
 
 int main()
 {
-  int *x = imalloc(sizeof(int));
+  long int *x = imalloc(sizeof(long int));
   int *y = imalloc(sizeof(int));
 
   print_heap();
 
   ifree(x);
+  ifree(y);
+  print_heap();
+  int *z = imalloc(sizeof(int));
 
   print_heap();
 }
