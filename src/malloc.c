@@ -1,14 +1,18 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <sys/mman.h>
 
 #define CHUNK_REQUEST_SIZE 64 * 1024
+#define MAX_ALLOCATION CHUNK_REQUEST_SIZE
+#define ALIGN16(x) (((x) + 15) & ~15)
 
 typedef struct block
 {
   size_t size;
   bool free;
   struct block *next;
+  bool is_mmap;
 } block_t;
 
 block_t *head = NULL;
@@ -48,12 +52,27 @@ block_t *find_free_block(size_t size)
 
 void *imalloc(size_t size)
 {
-  block_t *block = find_free_block(size);
+  if (size >= MAX_ALLOCATION)
+  {
+    size_t total_size = ALIGN16(sizeof(block_t) + size);
+    void *request = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (request == (void *)-1)
+    {
+      return NULL;
+    }
+    block_t *block = request;
+    block->size = size;
+    block->is_mmap = true;
+    block->free = false;
+    return (void *)(block + 1);
+  }
+
+  block_t *block = find_free_block(ALIGN16(size));
 
   while (block == NULL)
   {
     // Request must fit at least the header + size, use CHUNK_REQUEST_SIZE or size if larger
-    size_t chunk_size = sizeof(block_t) + size;
+    size_t chunk_size = ALIGN16(sizeof(block_t) + size);
     if (chunk_size < CHUNK_REQUEST_SIZE)
       chunk_size = CHUNK_REQUEST_SIZE;
 
@@ -78,7 +97,7 @@ void *imalloc(size_t size)
       curr->next = chunk;
     }
 
-    block = find_free_block(size);
+    block = find_free_block(ALIGN16(size));
     if (!block)
     {
       printf("Failed\n");
@@ -95,6 +114,12 @@ void ifree(void *ptr)
     return;
 
   block_t *block = (block_t *)ptr - 1;
+  if (block->is_mmap)
+  {
+    size_t total_size = ALIGN16(sizeof(block_t) + block->size);
+    munmap(block, total_size);
+    return;
+  }
   block->free = true;
   // Coalesce consecutive free blocks backward
   block_t *curr = head;
@@ -141,9 +166,9 @@ void print_heap()
 
 int main()
 {
-  void *a = imalloc(32 * 1024);
-  void *b = imalloc(32 * 1024);
-  void *c = imalloc(32 * 1024);
+  void *a = imalloc(80 * 1024);
+  void *b = imalloc(32);
+  void *c = imalloc(17);
   print_heap();
 
   ifree(a);
