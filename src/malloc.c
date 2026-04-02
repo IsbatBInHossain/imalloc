@@ -2,6 +2,8 @@
 #include <unistd.h>
 #include <stdbool.h>
 
+#define CHUNK_REQUEST_SIZE 64 * 1024
+
 typedef struct block
 {
   size_t size;
@@ -46,38 +48,44 @@ block_t *find_free_block(size_t size)
 
 void *imalloc(size_t size)
 {
-  block_t *block = find_free_block(size); // returns block_t*, not void*
+  block_t *block = find_free_block(size);
 
-  if (block == NULL)
+  while (block == NULL)
   {
-    void *request = sbrk(sizeof(block_t) + size);
+    // Request must fit at least the header + size, use CHUNK_REQUEST_SIZE or size if larger
+    size_t chunk_size = sizeof(block_t) + size;
+    if (chunk_size < CHUNK_REQUEST_SIZE)
+      chunk_size = CHUNK_REQUEST_SIZE;
+
+    void *request = sbrk(chunk_size);
     if (request == (void *)-1)
-      return NULL;
+      return NULL; // out of memory
 
-    block = (block_t *)request;
-    block->size = size;
-    block->free = false;
-    block->next = NULL;
+    block_t *chunk = (block_t *)request;
+    chunk->size = chunk_size - sizeof(block_t);
+    chunk->free = true;
+    chunk->next = NULL;
 
-    // Only add to list if it's a NEW block
     if (head == NULL)
     {
-      head = block;
+      head = chunk;
     }
     else
     {
       block_t *curr = head;
       while (curr->next != NULL)
         curr = curr->next;
-      curr->next = block;
+      curr->next = chunk;
+    }
+
+    block = find_free_block(size);
+    if (!block)
+    {
+      printf("Failed\n");
     }
   }
-  else
-  {
-    // Reusing existing block — just mark it used
-    block->free = false;
-  }
 
+  block->free = false;
   return (void *)(block + 1);
 }
 
@@ -133,9 +141,9 @@ void print_heap()
 
 int main()
 {
-  void *a = imalloc(20);
-  void *b = imalloc(20);
-  void *c = imalloc(20);
+  void *a = imalloc(32 * 1024);
+  void *b = imalloc(32 * 1024);
+  void *c = imalloc(32 * 1024);
   print_heap();
 
   ifree(a);
