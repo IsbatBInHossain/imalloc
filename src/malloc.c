@@ -50,10 +50,11 @@ void *imalloc(size_t size)
 
   if (block == NULL)
   {
-    block = sbrk(sizeof(block_t) + size);
-    if (block == (void *)-1)
+    void *request = sbrk(sizeof(block_t) + size);
+    if (request == (void *)-1)
       return NULL;
 
+    block = (block_t *)request;
     block->size = size;
     block->free = false;
     block->next = NULL;
@@ -87,6 +88,31 @@ void ifree(void *ptr)
 
   block_t *block = (block_t *)ptr - 1;
   block->free = true;
+  // Coalesce consecutive free blocks backward
+  block_t *curr = head;
+  block_t *prev = NULL;
+
+  while (curr && curr != block)
+  {
+    prev = curr;
+    curr = curr->next;
+  }
+
+  if (prev && prev->free == true)
+  {
+    prev->size += sizeof(block_t) + block->size;
+    prev->next = block->next;
+    block = prev;
+  }
+
+  // Coalesce consecutive free blocks forward
+  block_t *next = block->next;
+  while (next && next->free == true)
+  {
+    block->size += sizeof(block_t) + next->size;
+    block->next = next->next;
+    next = next->next;
+  }
 
   printf("Freed block:\n");
   printf("address : %p\n", (void *)block);
@@ -107,16 +133,14 @@ void print_heap()
 
 int main()
 {
-  void *x = imalloc(30);
-  int *y = imalloc(sizeof(int));
-
+  void *a = imalloc(20);
+  void *b = imalloc(20);
+  void *c = imalloc(20);
   print_heap();
 
-  ifree(x);
-  ifree(y);
-  print_heap();
-  int *z = imalloc(sizeof(int));
+  ifree(a);
+  ifree(c);
+  ifree(b);
 
   print_heap();
-  ifree(z);
 }
