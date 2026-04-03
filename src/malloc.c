@@ -1,11 +1,14 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <string.h>
 #include <sys/mman.h>
 
 #define CHUNK_REQUEST_SIZE 64 * 1024
 #define MAX_ALLOCATION CHUNK_REQUEST_SIZE
+#define MIN_SIZE 16
 #define ALIGN16(x) (((x) + 15) & ~15)
+#define MIN(a, b) ((a < b) ? (a) : (b))
 
 // Flag and size macros
 #define FLAG_FREE 0x1
@@ -13,7 +16,7 @@
 
 #define GET_SIZE(b) ((b)->size_n_flags & ~0xF)
 #define GET_FREE(b) ((b)->size_n_flags & FLAG_FREE)
-#define GET_MAP(b) ((b)->size_n_flags & FLAG_MMAP)
+#define GET_MMAP(b) ((b)->size_n_flags & FLAG_MMAP)
 
 #define SET_FREE(b) ((b)->size_n_flags |= FLAG_FREE)
 #define CLEAR_FREE(b) ((b)->size_n_flags &= ~FLAG_FREE)
@@ -66,6 +69,7 @@ block_t *find_free_block(size_t size)
 
 void *imalloc(size_t size)
 {
+  size = ALIGN16(size);
   if (size >= MAX_ALLOCATION)
   {
     size_t total_size = ALIGN16(sizeof(block_t) + size);
@@ -128,7 +132,7 @@ void ifree(void *ptr)
     return;
 
   block_t *block = (block_t *)ptr - 1;
-  if (GET_MAP(block))
+  if (GET_MMAP(block))
   {
     size_t total_size = ALIGN16(sizeof(block_t) + GET_SIZE(block));
     munmap(block, total_size);
@@ -165,6 +169,29 @@ void ifree(void *ptr)
   }
 }
 
+void *irealloc(void *ptr, size_t size)
+{
+  // check the edge cases first
+  if (ptr == NULL)
+    return imalloc(size);
+  if (size == 0)
+  {
+    ifree(ptr);
+    return NULL;
+  }
+  block_t *old_block = (block_t *)ptr - 1;
+  size_t old_size = GET_SIZE(old_block);
+  size_t new_size = ALIGN16(size);
+  // printf("Old size: %zu, New size: %zu\n", old_size, new_size);
+
+  void *new_ptr = imalloc(new_size);
+  if (!new_ptr)
+    return NULL;
+  memcpy(new_ptr, ptr, MIN(old_size, new_size));
+  ifree(ptr);
+  return new_ptr;
+}
+
 void print_heap()
 {
   block_t *curr = head;
@@ -179,17 +206,82 @@ void print_heap()
 
 int main()
 {
-  printf("Sizeof header: %zu\n", sizeof(block_t));
-  void *a = imalloc(45 * 1024);
-  void *b = imalloc(32 * 1024);
-  void *c = imalloc(17);
+  printf("==== BASIC ALLOC/FREE ====\n");
+  void *a = imalloc(32);
+  void *b = imalloc(64);
   print_heap();
 
   ifree(a);
-  print_heap();
-  ifree(c);
-  print_heap();
   ifree(b);
+  print_heap();
+
+  printf("\n==== REUSE TEST ====\n");
+  void *c = imalloc(16);
+  print_heap(); // should reuse previous freed blocks
+
+  printf("\n==== SPLIT TEST ====\n");
+  void *d = imalloc(128);
+  ifree(d);
+  print_heap();
+  void *e = imalloc(32); // should split
+  print_heap();
+
+  printf("\n==== COALESCE TEST ====\n");
+  void *x = imalloc(32);
+  void *y = imalloc(32);
+  void *z = imalloc(32);
+
+  ifree(x);
+  ifree(z);
+  print_heap();
+
+  ifree(y); // should merge all
+  print_heap();
+
+  printf("\n==== iREALLOC GROW ====\n");
+  char *r = imalloc(16);
+  strcpy(r, "hello");
+  r = irealloc(r, 64);
+  printf("iRealloc content: %s\n", r);
+  print_heap();
+
+  printf("\n==== iREALLOC SHRINK ====\n");
+  r = irealloc(r, 8);
+  printf("iRealloc content: %s\n", r);
+  print_heap();
+
+  printf("\n==== MMAP TEST ====\n");
+  void *big = imalloc(70 * 1024); // should use mmap
+  print_heap();
+  ifree(big);
+
+  printf("\n==== STRESS TEST ====\n");
+  void *arr[100];
+  for (int i = 0; i < 100; i++)
+  {
+    arr[i] = imalloc((i % 50) + 1);
+  }
+
+  for (int i = 0; i < 100; i += 2)
+  {
+    ifree(arr[i]);
+  }
+
+  for (int i = 1; i < 100; i += 2)
+  {
+    ifree(arr[i]);
+  }
 
   print_heap();
+
+  printf("\n==== EDGE CASES ====\n");
+  void *null_test = irealloc(NULL, 32);
+  print_heap();
+
+  null_test = irealloc(null_test, 0); // should free
+  print_heap();
+
+  ifree(NULL); // should do nothing
+
+  printf("\n==== DONE ====\n");
 }
