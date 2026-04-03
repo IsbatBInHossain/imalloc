@@ -238,16 +238,16 @@ int main()
   ifree(y); // should merge all
   print_heap();
 
-  printf("\n==== iREALLOC GROW ====\n");
+  printf("\n==== REALLOC GROW ====\n");
   char *r = imalloc(16);
   strcpy(r, "hello");
   r = irealloc(r, 64);
-  printf("iRealloc content: %s\n", r);
+  printf("Realloc content: %s\n", r);
   print_heap();
 
-  printf("\n==== iREALLOC SHRINK ====\n");
+  printf("\n==== REALLOC SHRINK ====\n");
   r = irealloc(r, 8);
-  printf("iRealloc content: %s\n", r);
+  printf("Realloc content: %s\n", r);
   print_heap();
 
   printf("\n==== MMAP TEST ====\n");
@@ -283,5 +283,8 @@ int main()
 
   ifree(NULL); // should do nothing
 
+  // free remainig memories
+  ifree(c);
+  ifree(e);
   printf("\n==== DONE ====\n");
 }
