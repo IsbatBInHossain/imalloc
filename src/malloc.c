@@ -36,6 +36,7 @@ block_t *allocate_free_memory(block_t *block, size_t size)
   if (GET_SIZE(block) >= size + sizeof(block_t) + 1)
   {
     block_t *next = (block_t *)((char *)(block + 1) + size);
+    next->size_n_flags = 0;
     SET_SIZE(next, GET_SIZE(block) - size - sizeof(block_t));
     SET_FREE(next);
     next->next = block->next;
@@ -154,7 +155,8 @@ void ifree(void *ptr)
 
   // Coalesce consecutive free blocks forward
   block_t *next = block->next;
-  while (next && GET_FREE(next))
+  while (next && GET_FREE(next) &&
+         ((char *)block + sizeof(block_t) + GET_SIZE(block) == (char *)next))
   {
     size_t total_size = GET_SIZE(block) + sizeof(block_t) + GET_SIZE(next);
     SET_SIZE(block, total_size);
@@ -177,9 +179,9 @@ void print_heap()
 
 int main()
 {
-  printf("Sizeof block:%zu\n", sizeof(block_t));
+  printf("Sizeof header: %zu\n", sizeof(block_t));
   void *a = imalloc(45 * 1024);
-  void *b = imalloc(32);
+  void *b = imalloc(32 * 1024);
   void *c = imalloc(17);
   print_heap();
 
