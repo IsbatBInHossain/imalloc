@@ -7,29 +7,42 @@
 #define MAX_ALLOCATION CHUNK_REQUEST_SIZE
 #define ALIGN16(x) (((x) + 15) & ~15)
 
+// Flag and size macros
+#define FLAG_FREE 0x1
+#define FLAG_MMAP 0x2
+
+#define GET_SIZE(b) ((b)->size_n_flags & ~0xF)
+#define GET_FREE(b) ((b)->size_n_flags & FLAG_FREE)
+#define GET_MAP(b) ((b)->size_n_flags & FLAG_MMAP)
+
+#define SET_FREE(b) ((b)->size_n_flags |= FLAG_FREE)
+#define CLEAR_FREE(b) ((b)->size_n_flags &= ~FLAG_FREE)
+#define SET_MMAP(b) ((b)->size_n_flags |= FLAG_MMAP)
+#define CLEAR_MMAP(b) ((b)->size_n_flags &= ~FLAG_MMAP)
+#define SET_SIZE(b, size) \
+  ((b)->size_n_flags = (size) | ((b)->size_n_flags & 0xF))
+
 typedef struct block
 {
-  size_t size;
-  bool free;
+  size_t size_n_flags;
   struct block *next;
-  bool is_mmap;
 } block_t;
 
 block_t *head = NULL;
 
 block_t *allocate_free_memory(block_t *block, size_t size)
 {
-  // Only split if the leftover is large enough to be useful
-  if (block->size >= size + sizeof(block_t) + 1)
+  // Only split if the leftover is large enough to hold metadata
+  if (GET_SIZE(block) >= size + sizeof(block_t) + 1)
   {
     block_t *next = (block_t *)((char *)(block + 1) + size);
-    next->size = block->size - size - sizeof(block_t);
-    next->free = true;
+    SET_SIZE(next, GET_SIZE(block) - size - sizeof(block_t));
+    SET_FREE(next);
     next->next = block->next;
     block->next = next;
-    block->size = size;
+    SET_SIZE(block, size);
   }
-  // else: reuse the whole block as-is (internal fragmentation, but safe)
+  // else: reuse the whole block
   return block;
 }
 
@@ -40,7 +53,7 @@ block_t *find_free_block(size_t size)
   block_t *curr = head;
   while (curr != NULL)
   {
-    if (curr->size >= size && curr->free == true)
+    if (GET_SIZE(curr) >= size && GET_FREE(curr))
     {
       return allocate_free_memory(curr, size);
     }
@@ -61,9 +74,10 @@ void *imalloc(size_t size)
       return NULL;
     }
     block_t *block = request;
-    block->size = size;
-    block->is_mmap = true;
-    block->free = false;
+    block->size_n_flags = 0;
+    SET_SIZE(block, size);
+    SET_MMAP(block);
+    CLEAR_FREE(block);
     return (void *)(block + 1);
   }
 
@@ -71,7 +85,7 @@ void *imalloc(size_t size)
 
   while (block == NULL)
   {
-    // Request must fit at least the header + size, use CHUNK_REQUEST_SIZE or size if larger
+    // Request must fit at least the header + size
     size_t chunk_size = ALIGN16(sizeof(block_t) + size);
     if (chunk_size < CHUNK_REQUEST_SIZE)
       chunk_size = CHUNK_REQUEST_SIZE;
@@ -81,8 +95,11 @@ void *imalloc(size_t size)
       return NULL; // out of memory
 
     block_t *chunk = (block_t *)request;
-    chunk->size = chunk_size - sizeof(block_t);
-    chunk->free = true;
+    chunk->size_n_flags = 0;
+
+    SET_SIZE(chunk, chunk_size - sizeof(block_t));
+    SET_FREE(chunk);
+    CLEAR_MMAP(chunk);
     chunk->next = NULL;
 
     if (head == NULL)
@@ -97,14 +114,10 @@ void *imalloc(size_t size)
       curr->next = chunk;
     }
 
-    block = find_free_block(ALIGN16(size));
-    if (!block)
-    {
-      printf("Failed\n");
-    }
+    block = allocate_free_memory(chunk, ALIGN16(size));
   }
 
-  block->free = false;
+  CLEAR_FREE(block);
   return (void *)(block + 1);
 }
 
@@ -114,13 +127,13 @@ void ifree(void *ptr)
     return;
 
   block_t *block = (block_t *)ptr - 1;
-  if (block->is_mmap)
+  if (GET_MAP(block))
   {
-    size_t total_size = ALIGN16(sizeof(block_t) + block->size);
+    size_t total_size = ALIGN16(sizeof(block_t) + GET_SIZE(block));
     munmap(block, total_size);
     return;
   }
-  block->free = true;
+  SET_FREE(block);
   // Coalesce consecutive free blocks backward
   block_t *curr = head;
   block_t *prev = NULL;
@@ -131,25 +144,23 @@ void ifree(void *ptr)
     curr = curr->next;
   }
 
-  if (prev && prev->free == true)
+  if (prev && GET_FREE(prev) && ((char *)prev + sizeof(block_t) + GET_SIZE(prev) == (char *)block))
   {
-    prev->size += sizeof(block_t) + block->size;
+    size_t total_size = GET_SIZE(prev) + sizeof(block_t) + GET_SIZE(block);
+    SET_SIZE(prev, total_size);
     prev->next = block->next;
     block = prev;
   }
 
   // Coalesce consecutive free blocks forward
   block_t *next = block->next;
-  while (next && next->free == true)
+  while (next && GET_FREE(next))
   {
-    block->size += sizeof(block_t) + next->size;
+    size_t total_size = GET_SIZE(block) + sizeof(block_t) + GET_SIZE(next);
+    SET_SIZE(block, total_size);
     block->next = next->next;
     next = next->next;
   }
-
-  printf("Freed block:\n");
-  printf("address : %p\n", (void *)block);
-  printf("size    : %zu\n", block->size);
 }
 
 void print_heap()
@@ -157,8 +168,8 @@ void print_heap()
   block_t *curr = head;
   while (curr)
   {
-    printf("[addr=%p size=%zu free=%d] -> ",
-           (void *)curr, curr->size, curr->free);
+    printf("[addr=%p size=%zu free=%zu] -> ",
+           (void *)curr, GET_SIZE(curr), GET_FREE(curr));
     curr = curr->next;
   }
   printf("NULL\n");
@@ -166,13 +177,16 @@ void print_heap()
 
 int main()
 {
-  void *a = imalloc(80 * 1024);
+  printf("Sizeof block:%zu\n", sizeof(block_t));
+  void *a = imalloc(45 * 1024);
   void *b = imalloc(32);
   void *c = imalloc(17);
   print_heap();
 
   ifree(a);
+  print_heap();
   ifree(c);
+  print_heap();
   ifree(b);
 
   print_heap();
